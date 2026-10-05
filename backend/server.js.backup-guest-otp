@@ -1,0 +1,2039 @@
+﻿require("dotenv").config();
+
+const express = require("express");
+const cors = require("cors");
+const mysql = require("mysql2/promise");
+const crypto = require("crypto");
+
+const {
+    analyzeBook
+} = require("./aiBookAnalyzer");
+
+const {
+    analyzeSyllabus
+} = require("./aiSyllabusAnalyzer");
+
+const {
+    matchBooks
+} = require("./bookMatcher");
+
+const requestService = require("./requestService");
+
+const app = express();
+
+const PORT = Number(process.env.PORT || 3000);
+
+app.use(cors());
+
+app.use(
+    express.json({
+        limit: "15mb"
+    })
+);
+
+app.use(
+    express.urlencoded({
+        extended: true,
+        limit: "15mb"
+    })
+);
+
+
+/* =========================================================
+   DATABASE
+========================================================= */
+
+const dbConfig = {
+    host: process.env.DB_HOST || "localhost",
+    user: process.env.DB_USER || "root",
+    password: process.env.DB_PASSWORD || "",
+    database: process.env.DB_NAME || "minepthe",
+    port: Number(process.env.DB_PORT || 3306)
+};
+
+let db = null;
+
+async function connectDatabase() {
+
+    try {
+
+        db = await mysql.createPool({
+            ...dbConfig,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0
+        });
+
+        await db.execute("SELECT 1");
+
+        console.log("MySQL connected successfully!");
+
+    } catch (error) {
+
+        console.error("MySQL connection failed:");
+        console.error(error.message);
+
+        db = null;
+    }
+}
+
+
+function requireDatabase(res) {
+
+    if (!db) {
+
+        res.status(503).json({
+            success: false,
+            message: "Database is currently unavailable."
+        });
+
+        return false;
+    }
+
+    return true;
+}
+
+
+/* =========================================================
+   HEALTH
+========================================================= */
+
+app.get("/", (req, res) => {
+
+    res.json({
+        success: true,
+        project: "MINEPTHE",
+        description:
+            "Smart Academic Book Sharing & Matching System",
+        motto: "Give - Find - Grow",
+        status: "Backend running"
+    });
+
+});
+
+
+app.get("/api/test", (req, res) => {
+
+    res.json({
+        success: true,
+        message: "MINEPTHE backend API is working."
+    });
+
+});
+
+
+/* =========================================================
+   AUTHENTICATION
+========================================================= */
+
+function hashPassword(password) {
+
+    return crypto
+        .createHash("sha256")
+        .update(String(password))
+        .digest("hex");
+}
+
+
+app.post("/api/register", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const name = String(req.body.name || "").trim();
+        const email = String(req.body.email || "")
+            .trim()
+            .toLowerCase();
+
+        const password = String(req.body.password || "");
+
+        if (!name || !email || !password) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Name, email and password are required."
+            });
+        }
+
+        if (password.length < 6) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Password must contain at least 6 characters."
+            });
+        }
+
+        const [existing] = await db.execute(
+            `
+            SELECT id
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            `,
+            [email]
+        );
+
+        if (existing.length > 0) {
+
+            return res.status(409).json({
+                success: false,
+                message: "An account with this email already exists."
+            });
+        }
+
+        const [result] = await db.execute(
+            `
+            INSERT INTO users
+            (
+                name,
+                email,
+                password,
+                role
+            )
+            VALUES (?, ?, ?, 'student')
+            `,
+            [
+                name,
+                email,
+                hashPassword(password)
+            ]
+        );
+
+        await db.execute(
+            `
+            INSERT INTO donor_reputation
+            (
+                user_id
+            )
+            VALUES (?)
+            `,
+            [result.insertId]
+        );
+
+        res.status(201).json({
+            success: true,
+            message: "Registration successful.",
+            user: {
+                id: result.insertId,
+                name,
+                email,
+                role: "student"
+            }
+        });
+
+    } catch (error) {
+
+        console.error("Registration error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Registration failed."
+        });
+    }
+
+});
+
+
+app.post("/api/login", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const email = String(req.body.email || "")
+            .trim()
+            .toLowerCase();
+
+        const password = String(req.body.password || "");
+
+        if (!email || !password) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Email and password are required."
+            });
+        }
+
+        const [rows] = await db.execute(
+            `
+            SELECT
+                id,
+                name,
+                email,
+                password,
+                role
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            `,
+            [email]
+        );
+
+        if (rows.length === 0) {
+
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password."
+            });
+        }
+
+        const user = rows[0];
+
+        if (hashPassword(password) !== user.password) {
+
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password."
+            });
+        }
+
+        delete user.password;
+
+        res.json({
+            success: true,
+            message: "Login successful.",
+            user
+        });
+
+    } catch (error) {
+
+        console.error("Login error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Login failed."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   GUEST OTP
+========================================================= */
+
+const otpStore = new Map();
+
+
+app.post("/api/guest/send-otp", async (req, res) => {
+
+    const phone = String(req.body.phone || "").trim();
+
+    if (!/^[0-9]{10}$/.test(phone)) {
+
+        return res.status(400).json({
+            success: false,
+            message:
+                "Please enter a valid 10-digit phone number."
+        });
+    }
+
+    const demoOtp = Math.floor(
+        100000 + Math.random() * 900000
+    ).toString();
+
+    otpStore.set(phone, {
+        otp: demoOtp,
+        expiresAt: Date.now() + 5 * 60 * 1000
+    });
+
+    console.log(
+        "MINEPTHE demo OTP for " +
+        phone +
+        ": " +
+        demoOtp
+    );
+
+    res.json({
+        success: true,
+        message: "Demo OTP generated successfully.",
+        demoOtp
+    });
+
+});
+
+
+app.post("/api/guest/verify-otp", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const phone = String(req.body.phone || "").trim();
+        const otp = String(req.body.otp || "").trim();
+
+        const savedOtp = otpStore.get(phone);
+
+        if (!savedOtp) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "No OTP found. Please generate a new OTP."
+            });
+        }
+
+        if (Date.now() > savedOtp.expiresAt) {
+
+            otpStore.delete(phone);
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "OTP expired. Please generate a new OTP."
+            });
+        }
+
+        if (savedOtp.otp !== otp) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Invalid OTP."
+            });
+        }
+
+        otpStore.delete(phone);
+
+        const [existing] = await db.execute(
+            `
+            SELECT id
+            FROM guest_donors
+            WHERE phone = ?
+            LIMIT 1
+            `,
+            [phone]
+        );
+
+        let guestDonorId;
+
+        if (existing.length > 0) {
+
+            guestDonorId = existing[0].id;
+
+            await db.execute(
+                `
+                UPDATE guest_donors
+                SET
+                    phone_verified = 1,
+                    verified_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                `,
+                [guestDonorId]
+            );
+
+        } else {
+
+            const [result] = await db.execute(
+                `
+                INSERT INTO guest_donors
+                (
+                    email,
+                    phone,
+                    phone_verified,
+                    verified_at
+                )
+                VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+                `,
+                [
+                    "guest_" +
+                    phone +
+                    "_" +
+                    Date.now() +
+                    "@minepthe.local",
+                    phone
+                ]
+            );
+
+            guestDonorId = result.insertId;
+        }
+
+        res.json({
+            success: true,
+            message: "Phone number verified successfully.",
+            guestDonorId
+        });
+
+    } catch (error) {
+
+        console.error("OTP verification error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "OTP verification failed."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   AI BOOK ANALYSIS
+========================================================= */
+
+app.post("/api/ai/analyze-book", async (req, res) => {
+
+    try {
+
+        const image = req.body.image;
+
+        if (!image) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Book image is required."
+            });
+        }
+
+        const result = await analyzeBook(image);
+
+        res.json(result);
+
+    } catch (error) {
+
+        console.error("AI book analysis error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Book image analysis failed."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   SYLLABUS ANALYSIS
+========================================================= */
+
+app.post("/api/ai/analyze-syllabus", (req, res) => {
+
+    try {
+
+        const syllabusText =
+            String(req.body.syllabusText || "").trim();
+
+        if (!syllabusText) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Syllabus text is required."
+            });
+        }
+
+        const result =
+            analyzeSyllabus(syllabusText);
+
+        res.json(result);
+
+    } catch (error) {
+
+        console.error("Syllabus analysis error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Syllabus analysis failed."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   SMART BOOK MATCHING
+========================================================= */
+
+app.post("/api/books/match", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const studentSubjects =
+            Array.isArray(req.body.studentSubjects)
+                ? req.body.studentSubjects
+                : [];
+
+        const [books] = await db.execute(
+            `
+            SELECT
+                id,
+                title,
+                author,
+                subject,
+                department,
+                year,
+                description,
+                cover_image,
+                status
+            FROM books
+            WHERE status IN ('pending', 'verified', 'requested')
+            ORDER BY id DESC
+            `
+        );
+
+        const matches =
+            matchBooks(
+                books,
+                studentSubjects
+            );
+
+        res.json({
+            success: true,
+            matches
+        });
+
+    } catch (error) {
+
+        console.error("Book matching error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Book matching failed."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   BOOKS
+========================================================= */
+
+app.get("/api/books", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [books] = await db.execute(
+            `
+            SELECT *
+            FROM books
+            ORDER BY id DESC
+            `
+        );
+
+        res.json({
+            success: true,
+            books
+        });
+
+    } catch (error) {
+
+        console.error("Get books error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to load books."
+        });
+    }
+
+});
+
+
+app.get("/api/books/:id", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [rows] = await db.execute(
+            `
+            SELECT *
+            FROM books
+            WHERE id = ?
+            LIMIT 1
+            `,
+            [req.params.id]
+        );
+
+        if (rows.length === 0) {
+
+            return res.status(404).json({
+                success: false,
+                message: "Book not found."
+            });
+        }
+
+        res.json({
+            success: true,
+            book: rows[0]
+        });
+
+    } catch (error) {
+
+        console.error("Get book error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to load the book."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   GUEST DONATION
+========================================================= */
+
+app.post("/api/guest/donate-book", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const phone =
+            String(req.body.phone || "").trim();
+
+        const title =
+            String(req.body.title || "").trim();
+
+        const author =
+            String(req.body.author || "").trim();
+
+        const subject =
+            String(req.body.subject || "").trim();
+
+        const description =
+            String(req.body.description || "").trim();
+
+        const coverImage =
+            req.body.cover_image || null;
+
+        if (!phone || !title) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Phone and book title are required."
+            });
+        }
+
+        const [guestRows] = await db.execute(
+            `
+            SELECT id, phone_verified
+            FROM guest_donors
+            WHERE phone = ?
+            LIMIT 1
+            `,
+            [phone]
+        );
+
+        if (
+            guestRows.length === 0 ||
+            guestRows[0].phone_verified !== 1
+        ) {
+
+            return res.status(403).json({
+                success: false,
+                message:
+                    "Please verify your phone number before donating."
+            });
+        }
+
+        const guestDonorId =
+            guestRows[0].id;
+
+        const [result] = await db.execute(
+            `
+            INSERT INTO books
+            (
+                title,
+                author,
+                subject,
+                description,
+                cover_image,
+                status,
+                guest_donor_id
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+            `,
+            [
+                title,
+                author || null,
+                subject || null,
+                description || null,
+                coverImage,
+                guestDonorId
+            ]
+        );
+
+        res.status(201).json({
+            success: true,
+            message:
+                "Guest book donation submitted successfully.",
+            bookId: result.insertId
+        });
+
+    } catch (error) {
+
+        console.error("Guest donation error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to submit guest donation."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   REGISTERED DONATION
+========================================================= */
+
+app.post("/api/books/donate", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const {
+            donorId,
+            title,
+            author,
+            subject,
+            department,
+            year,
+            description,
+            coverImage
+        } = req.body;
+
+        if (!donorId || !title) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Donor ID and book title are required."
+            });
+        }
+
+        const [result] = await db.execute(
+            `
+            INSERT INTO books
+            (
+                donor_id,
+                title,
+                author,
+                subject,
+                department,
+                year,
+                description,
+                cover_image,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            `,
+            [
+                donorId,
+                title,
+                author || null,
+                subject || null,
+                department || null,
+                year || null,
+                description || null,
+                coverImage || null
+            ]
+        );
+
+        await db.execute(
+            `
+            INSERT INTO donor_reputation
+            (
+                user_id,
+                verified_books
+            )
+            VALUES (?, 0)
+            ON DUPLICATE KEY UPDATE
+                verified_books = verified_books
+            `,
+            [donorId]
+        );
+
+        res.status(201).json({
+            success: true,
+            message:
+                "Book donation submitted successfully.",
+            bookId: result.insertId
+        });
+
+    } catch (error) {
+
+        console.error("Donation error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to submit donation."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   MY DONATIONS
+========================================================= */
+
+app.get("/api/users/:userId/donations", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [books] = await db.execute(
+            `
+            SELECT *
+            FROM books
+            WHERE donor_id = ?
+            ORDER BY id DESC
+            `,
+            [req.params.userId]
+        );
+
+        res.json({
+            success: true,
+            books
+        });
+
+    } catch (error) {
+
+        console.error("My donations error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to load donations."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   BOOK REQUESTS
+========================================================= */
+
+app.post("/api/requests", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const request =
+            await requestService.createRequest(
+                db,
+                req.body
+            );
+
+        await db.execute(
+            `
+            UPDATE books
+            SET status = 'requested'
+            WHERE id = ?
+              AND status IN ('pending', 'verified')
+            `,
+            [request.book_id]
+        );
+
+        await db.execute(
+            `
+            INSERT INTO notifications
+            (
+                user_id,
+                message
+            )
+            SELECT
+                donor_id,
+                CONCAT(
+                    'A student requested your book: ',
+                    title
+                )
+            FROM books
+            WHERE id = ?
+              AND donor_id IS NOT NULL
+            `,
+            [request.book_id]
+        );
+
+        res.status(201).json({
+            success: true,
+            message:
+                "Book request created successfully.",
+            request
+        });
+
+    } catch (error) {
+
+        console.error("Create request error:");
+        console.error(error);
+
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
+
+});
+
+
+app.get("/api/requests", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const requests =
+            await requestService.getRequests(db);
+
+        res.json({
+            success: true,
+            requests
+        });
+
+    } catch (error) {
+
+        console.error("Get requests error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to load requests."
+        });
+    }
+
+});
+
+
+app.get("/api/requests/:id", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const request =
+            await requestService.getRequestById(
+                db,
+                req.params.id
+            );
+
+        if (!request) {
+
+            return res.status(404).json({
+                success: false,
+                message: "Request not found."
+            });
+        }
+
+        res.json({
+            success: true,
+            request
+        });
+
+    } catch (error) {
+
+        console.error("Get request error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to load request."
+        });
+    }
+
+});
+
+
+app.patch("/api/requests/:id/status", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const status =
+            String(req.body.status || "")
+                .trim()
+                .toLowerCase();
+
+        const request =
+            await requestService.updateRequestStatus(
+                db,
+                req.params.id,
+                status
+            );
+
+        if (!request) {
+
+            return res.status(404).json({
+                success: false,
+                message: "Request not found."
+            });
+        }
+
+        if (status === "accepted") {
+
+            await db.execute(
+                `
+                UPDATE books
+                SET status = 'requested'
+                WHERE id = ?
+                `,
+                [request.book_id]
+            );
+
+        }
+
+        if (status === "collected") {
+
+            await db.execute(
+                `
+                UPDATE books
+                SET status = 'transferred'
+                WHERE id = ?
+                `,
+                [request.book_id]
+            );
+
+        }
+
+        res.json({
+            success: true,
+            message:
+                "Request status updated successfully.",
+            request
+        });
+
+    } catch (error) {
+
+        console.error("Update request status error:");
+        console.error(error);
+
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
+
+});
+
+
+app.delete("/api/requests/:id", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const deleted =
+            await requestService.deleteRequest(
+                db,
+                req.params.id
+            );
+
+        if (!deleted) {
+
+            return res.status(404).json({
+                success: false,
+                message: "Request not found."
+            });
+        }
+
+        res.json({
+            success: true,
+            message:
+                "Request deleted successfully."
+        });
+
+    } catch (error) {
+
+        console.error("Delete request error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to delete request."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   COLLECTION POINTS
+========================================================= */
+
+app.get("/api/collection-points", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [points] = await db.execute(
+            `
+            SELECT *
+            FROM collection_points
+            WHERE safety_status = 'approved'
+            ORDER BY name
+            `
+        );
+
+        res.json({
+            success: true,
+            collectionPoints: points
+        });
+
+    } catch (error) {
+
+        console.error("Collection points error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to load collection points."
+        });
+    }
+
+});
+
+
+app.post("/api/collection-points", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const {
+            name,
+            address,
+            latitude,
+            longitude,
+            contactPerson,
+            instructions
+        } = req.body;
+
+        if (!name || !address) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Collection point name and address are required."
+            });
+        }
+
+        const [result] = await db.execute(
+            `
+            INSERT INTO collection_points
+            (
+                name,
+                address,
+                latitude,
+                longitude,
+                contact_person,
+                instructions,
+                is_verified,
+                safety_status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')
+            `,
+            [
+                name,
+                address,
+                latitude || null,
+                longitude || null,
+                contactPerson || null,
+                instructions || null
+            ]
+        );
+
+        res.status(201).json({
+            success: true,
+            message:
+                "Collection point submitted for safety review.",
+            collectionPointId:
+                result.insertId
+        });
+
+    } catch (error) {
+
+        console.error("Create collection point error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to create collection point."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   HANDOVERS / COLLECTION CODE
+========================================================= */
+
+function generateCollectionCode() {
+
+    return Math.floor(
+        100000 + Math.random() * 900000
+    ).toString();
+}
+
+
+app.post("/api/handovers", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const requestId =
+            Number(req.body.requestId);
+
+        if (!requestId) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Request ID is required."
+            });
+        }
+
+        const collectionCode =
+            generateCollectionCode();
+
+        const [result] = await db.execute(
+            `
+            INSERT INTO handovers
+            (
+                request_id,
+                status
+            )
+            VALUES (?, 'accepted')
+            ON DUPLICATE KEY UPDATE
+                status = 'accepted'
+            `,
+            [requestId]
+        );
+
+        await db.execute(
+            `
+            UPDATE book_requests
+            SET
+                status = 'accepted',
+                collection_code = ?
+            WHERE id = ?
+            `,
+            [
+                collectionCode,
+                requestId
+            ]
+        );
+
+        const [rows] = await db.execute(
+            `
+            SELECT *
+            FROM handovers
+            WHERE request_id = ?
+            `,
+            [requestId]
+        );
+
+        res.status(201).json({
+            success: true,
+            message:
+                "Handover created successfully.",
+            collectionCode,
+            handover:
+                rows[0] || {
+                    id: result.insertId
+                }
+        });
+
+    } catch (error) {
+
+        console.error("Handover creation error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to create handover."
+        });
+    }
+
+});
+
+
+app.post("/api/handovers/verify-code", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const requestId =
+            Number(req.body.requestId);
+
+        const collectionCode =
+            String(
+                req.body.collectionCode || ""
+            ).trim();
+
+        if (!requestId || !collectionCode) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Request ID and collection code are required."
+            });
+        }
+
+        const [rows] = await db.execute(
+            `
+            SELECT
+                br.id,
+                br.book_id,
+                br.status,
+                br.collection_code
+            FROM book_requests br
+            WHERE br.id = ?
+            LIMIT 1
+            `,
+            [requestId]
+        );
+
+        if (rows.length === 0) {
+
+            return res.status(404).json({
+                success: false,
+                message: "Request not found."
+            });
+        }
+
+        if (
+            rows[0].collection_code !==
+            collectionCode
+        ) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Invalid collection code."
+            });
+        }
+
+        await db.execute(
+            `
+            UPDATE handovers
+            SET
+                status = 'collected',
+                collection_code_verified = 1,
+                receiver_confirmed = 1,
+                completed_at = CURRENT_TIMESTAMP,
+                verified_at = CURRENT_TIMESTAMP
+            WHERE request_id = ?
+            `,
+            [requestId]
+        );
+
+        await db.execute(
+            `
+            UPDATE book_requests
+            SET status = 'collected'
+            WHERE id = ?
+            `,
+            [requestId]
+        );
+
+        await db.execute(
+            `
+            UPDATE books
+            SET status = 'transferred'
+            WHERE id = ?
+            `,
+            [rows[0].book_id]
+        );
+
+        res.json({
+            success: true,
+            message:
+                "Collection code verified. Book collection completed."
+        });
+
+    } catch (error) {
+
+        console.error("Collection verification error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Collection verification failed."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   NOTIFICATIONS
+========================================================= */
+
+app.get("/api/notifications/:userId", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [rows] = await db.execute(
+            `
+            SELECT *
+            FROM notifications
+            WHERE user_id = ?
+            ORDER BY id DESC
+            `,
+            [req.params.userId]
+        );
+
+        res.json({
+            success: true,
+            notifications: rows
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to load notifications."
+        });
+    }
+
+});
+
+
+app.patch("/api/notifications/:id/read", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        await db.execute(
+            `
+            UPDATE notifications
+            SET is_read = 1
+            WHERE id = ?
+            `,
+            [req.params.id]
+        );
+
+        res.json({
+            success: true,
+            message: "Notification marked as read."
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to update notification."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   MESSAGES
+========================================================= */
+
+app.get("/api/messages/:requestId", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [rows] = await db.execute(
+            `
+            SELECT *
+            FROM messages
+            WHERE request_id = ?
+            ORDER BY id ASC
+            `,
+            [req.params.requestId]
+        );
+
+        res.json({
+            success: true,
+            messages: rows
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to load messages."
+        });
+    }
+
+});
+
+
+app.post("/api/messages", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const {
+            requestId,
+            senderId,
+            senderType,
+            message
+        } = req.body;
+
+        if (
+            !requestId ||
+            !senderType ||
+            !message
+        ) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Request, sender type and message are required."
+            });
+        }
+
+        if (
+            !["receiver", "donor"]
+                .includes(senderType)
+        ) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Invalid sender type."
+            });
+        }
+
+        const [result] = await db.execute(
+            `
+            INSERT INTO messages
+            (
+                request_id,
+                sender_id,
+                sender_type,
+                message
+            )
+            VALUES (?, ?, ?, ?)
+            `,
+            [
+                requestId,
+                senderId || null,
+                senderType,
+                message
+            ]
+        );
+
+        const [rows] = await db.execute(
+            `
+            SELECT *
+            FROM messages
+            WHERE id = ?
+            `,
+            [result.insertId]
+        );
+
+        res.status(201).json({
+            success: true,
+            message: rows[0]
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message: "Unable to send message."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   REPORTS
+========================================================= */
+
+app.post("/api/reports", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const {
+            requestId,
+            reporterId,
+            reason,
+            description,
+            category,
+            evidenceImage
+        } = req.body;
+
+        if (
+            !requestId ||
+            !reporterId ||
+            !reason
+        ) {
+
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Request ID, reporter ID and reason are required."
+            });
+        }
+
+        const [result] = await db.execute(
+            `
+            INSERT INTO reports
+            (
+                request_id,
+                reporter_id,
+                reason,
+                description,
+                category,
+                evidence_image
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            `,
+            [
+                requestId,
+                reporterId,
+                reason,
+                description || null,
+                category || null,
+                evidenceImage || null
+            ]
+        );
+
+        await db.execute(
+            `
+            UPDATE book_requests
+            SET
+                status = 'reported',
+                safety_issue_status = 'reported'
+            WHERE id = ?
+            `,
+            [requestId]
+        );
+
+        res.status(201).json({
+            success: true,
+            message:
+                "Safety report submitted successfully.",
+            reportId: result.insertId
+        });
+
+    } catch (error) {
+
+        console.error("Report error:");
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to submit report."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   REPUTATION
+========================================================= */
+
+app.get("/api/reputation/:userId", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [rows] = await db.execute(
+            `
+            SELECT *
+            FROM donor_reputation
+            WHERE user_id = ?
+            LIMIT 1
+            `,
+            [req.params.userId]
+        );
+
+        res.json({
+            success: true,
+            reputation:
+                rows[0] || {
+                    user_id:
+                        Number(req.params.userId),
+                    points: 0,
+                    successful_donations: 0,
+                    verified_books: 0,
+                    successful_handovers: 0,
+                    warnings: 0,
+                    restricted: 0,
+                    blacklisted: 0
+                }
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to load reputation."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   SAFETY
+========================================================= */
+
+app.get("/api/safety/:userId", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        const [rows] = await db.execute(
+            `
+            SELECT *
+            FROM safety_records
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            `,
+            [req.params.userId]
+        );
+
+        res.json({
+            success: true,
+            safety:
+                rows[0] || {
+                    user_id:
+                        Number(req.params.userId),
+                    warnings: 0,
+                    confirmed_violations: 0,
+                    safety_status: "normal"
+                }
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to load safety record."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   ADMIN - BOOK VERIFICATION
+========================================================= */
+
+app.patch("/api/admin/books/:id/verify", async (req, res) => {
+
+    try {
+
+        if (!requireDatabase(res)) {
+            return;
+        }
+
+        await db.execute(
+            `
+            UPDATE books
+            SET status = 'verified'
+            WHERE id = ?
+            `,
+            [req.params.id]
+        );
+
+        const [rows] = await db.execute(
+            `
+            SELECT donor_id
+            FROM books
+            WHERE id = ?
+            `,
+            [req.params.id]
+        );
+
+        if (
+            rows.length > 0 &&
+            rows[0].donor_id
+        ) {
+
+            await db.execute(
+                `
+                INSERT INTO donor_reputation
+                (
+                    user_id,
+                    verified_books,
+                    points
+                )
+                VALUES (?, 1, 10)
+                ON DUPLICATE KEY UPDATE
+                    verified_books =
+                        verified_books + 1,
+                    points =
+                        points + 10
+                `,
+                [rows[0].donor_id]
+            );
+        }
+
+        res.json({
+            success: true,
+            message: "Book verified successfully."
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Unable to verify book."
+        });
+    }
+
+});
+
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
+
+app.use((err, req, res, next) => {
+
+    console.error("Unhandled server error:");
+    console.error(err);
+
+    res.status(500).json({
+        success: false,
+        message:
+            "Internal server error."
+    });
+
+});
+
+
+/* =========================================================
+   START
+========================================================= */
+
+async function startServer() {
+
+    await connectDatabase();
+
+    app.listen(PORT, () => {
+
+        console.log("");
+        console.log("==========================================");
+        console.log("        MINEPTHE BACKEND SERVER");
+        console.log("==========================================");
+        console.log(
+            "Server running at http://localhost:" +
+            PORT
+        );
+        console.log(
+            "Smart Academic Book Sharing & Matching System"
+        );
+        console.log("==========================================");
+        console.log("");
+
+    });
+
+}
+
+
+startServer();
+
+
