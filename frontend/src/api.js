@@ -1,5 +1,6 @@
-const API_BASE_URL =
-    import.meta.env.VITE_API_URL || "http://localhost:3000";
+﻿const API_BASE_URL =
+    import.meta.env.VITE_API_URL ||
+    "http://localhost:3000";
 
 
 /* =========================================================
@@ -65,7 +66,6 @@ export async function registerUser(data) {
     });
 }
 
-
 export async function loginUser(data) {
     return apiRequest("/api/login", {
         method: "POST",
@@ -89,7 +89,6 @@ export async function sendGuestOTP(data) {
         body
     });
 }
-
 
 export async function verifyGuestOTP(phoneOrData, otp) {
     const body =
@@ -127,11 +126,9 @@ export async function getBooks() {
     return apiRequest("/api/books");
 }
 
-
 export async function getBook(bookId) {
     return apiRequest(`/api/books/${bookId}`);
 }
-
 
 export async function donateBook(data) {
     return apiRequest("/api/books/donate", {
@@ -140,11 +137,8 @@ export async function donateBook(data) {
     });
 }
 
-
 export async function getMyDonations(userId) {
-    return apiRequest(
-        `/api/books/user/${userId}`
-    );
+    return apiRequest(`/api/books/user/${userId}`);
 }
 
 
@@ -160,7 +154,6 @@ export async function analyzeBookImage(image) {
         }
     });
 }
-
 
 export async function analyzeBook(image) {
     return analyzeBookImage(image);
@@ -202,20 +195,17 @@ export async function createRequest(data) {
     });
 }
 
-
 export async function getRequests(userId) {
     return apiRequest(
         `/api/requests?requesterId=${userId}`
     );
 }
 
-
 export async function getReceivedRequests(userId) {
     return apiRequest(
         `/api/requests?donorId=${userId}`
     );
 }
-
 
 export async function updateRequestStatus(
     requestId,
@@ -232,7 +222,6 @@ export async function updateRequestStatus(
     );
 }
 
-
 export async function deleteRequest(requestId) {
     return apiRequest(
         `/api/requests/${requestId}`,
@@ -247,9 +236,7 @@ export async function deleteRequest(requestId) {
    RECEIVER VERIFICATION
 ========================================================= */
 
-export async function submitReceiverVerification(
-    data
-) {
+export async function submitReceiverVerification(data) {
     return apiRequest(
         "/api/receiver-verification",
         {
@@ -259,15 +246,11 @@ export async function submitReceiverVerification(
     );
 }
 
-
-export async function getReceiverVerification(
-    userId
-) {
+export async function getReceiverVerification(userId) {
     return apiRequest(
         `/api/receiver-verification/${userId}`
     );
 }
-
 
 export async function getStudentProfile(userId) {
     return apiRequest(
@@ -286,10 +269,7 @@ export async function getCollectionPoints() {
     );
 }
 
-
-export async function createCollectionPoint(
-    data
-) {
+export async function createCollectionPoint(data) {
     return apiRequest(
         "/api/collection-points",
         {
@@ -304,9 +284,7 @@ export async function createCollectionPoint(
    HANDOVERS / COLLECTION
 ========================================================= */
 
-export async function createHandover(
-    requestId
-) {
+export async function createHandover(requestId) {
     const body =
         typeof requestId === "object"
             ? requestId
@@ -322,7 +300,6 @@ export async function createHandover(
         }
     );
 }
-
 
 export async function verifyCollectionCode(
     requestId,
@@ -350,14 +327,11 @@ export async function verifyCollectionCode(
    NOTIFICATIONS
 ========================================================= */
 
-export async function getNotifications(
-    userId
-) {
+export async function getNotifications(userId) {
     return apiRequest(
         `/api/notifications/${userId}`
     );
 }
-
 
 export async function markNotificationRead(
     notificationId
@@ -381,7 +355,6 @@ export async function getMessages(userId) {
     );
 }
 
-
 export async function sendMessage(data) {
     return apiRequest(
         "/api/messages",
@@ -398,6 +371,16 @@ export async function sendMessage(data) {
 ========================================================= */
 
 export async function submitReport(data) {
+    return apiRequest(
+        "/api/reports",
+        {
+            method: "POST",
+            body: data
+        }
+    );
+}
+
+export async function createReport(data) {
     return apiRequest(
         "/api/reports",
         {
@@ -429,7 +412,6 @@ export async function getSafetyRecords(userId) {
     );
 }
 
-
 export async function getSafety(userId) {
     return getSafetyRecords(userId);
 }
@@ -439,22 +421,22 @@ export async function getSafety(userId) {
    ADMIN
 ========================================================= */
 
-
 export async function verifyBook(bookId) {
+    const token =
+        localStorage.getItem("mineptheAdminToken");
+
     return apiRequest(
         `/api/admin/books/${bookId}/verify`,
         {
-            method: "PATCH"
+            method: "PATCH",
+            headers: {
+                Authorization:
+                    `Bearer ${token}`
+            }
         }
     );
 }
 
-export async function createReport(data) {
-    return apiRequest("/api/reports", {
-        method: "POST",
-        body: data
-    });
-}
 export async function getAdminBooks() {
     const token =
         localStorage.getItem(
@@ -472,6 +454,69 @@ export async function getAdminBooks() {
         }
     );
 }
+
+export async function getAdminOverview() {
+    const token =
+        localStorage.getItem(
+            "mineptheAdminToken"
+        );
+
+    return apiRequest(
+        "/api/admin/overview",
+        {
+            method: "GET",
+            headers: {
+                Authorization:
+                    `Bearer ${token}`
+            }
+        }
+    );
+}
+
+export async function getAdminMe() {
+    const token =
+        localStorage.getItem(
+            "mineptheAdminToken"
+        );
+
+    return apiRequest(
+        "/api/admin/me",
+        {
+            method: "GET",
+            headers: {
+                Authorization:
+                    `Bearer ${token}`
+            }
+        }
+    );
+}
+
+export async function changeAdminPassword(
+    currentPassword,
+    newPassword
+) {
+    const token =
+        localStorage.getItem(
+            "mineptheAdminToken"
+        );
+
+    return apiRequest(
+        "/api/admin/change-password",
+        {
+            method: "POST",
+            headers: {
+                Authorization:
+                    `Bearer ${token}`
+            },
+            body: {
+                currentPassword,
+                newPassword
+            }
+        }
+    );
+}
+
+
 /* =========================================================
    DEFAULT API OBJECT
 ========================================================= */
@@ -518,60 +563,17 @@ const api = {
     sendMessage,
 
     submitReport,
+    createReport,
 
     getReputation,
     getSafetyRecords,
     getSafety,
 
     getAdminBooks,
-    verifyBook
+    verifyBook,
+    getAdminOverview,
+    getAdminMe,
+    changeAdminPassword
 };
-export async function getAdminOverview() {
-    const token =
-        localStorage.getItem("mineptheAdminToken");
 
-    return apiRequest("/api/admin/overview", {
-        method: "GET",
-        headers: {
-            Authorization: `Bearer ${token}`
-        }
-    });
-}
-
-
-export async function getAdminMe() {
-    const token =
-        localStorage.getItem("mineptheAdminToken");
-
-    return apiRequest("/api/admin/me", {
-        method: "GET",
-        headers: {
-            Authorization: `Bearer ${token}`
-        }
-    });
-}
-
-
-export async function changeAdminPassword(
-    currentPassword,
-    newPassword
-) {
-    const token =
-        localStorage.getItem("mineptheAdminToken");
-
-    return apiRequest(
-        "/api/admin/change-password",
-        {
-            method: "POST",
-            headers: {
-                Authorization:
-                    `Bearer ${token}`
-            },
-            body: {
-                currentPassword,
-                newPassword
-            }
-        }
-    );
-}
 export default api;
