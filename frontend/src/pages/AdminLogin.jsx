@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+const API_BASE_URL =
+    import.meta.env.VITE_API_URL ||
+    "http://localhost:3000";
+
 function AdminLogin() {
     const navigate = useNavigate();
 
@@ -17,9 +21,7 @@ function AdminLogin() {
         const cleanEmail = email.trim().toLowerCase();
 
         if (!cleanEmail || !password) {
-            setError(
-                "Admin email and password are required."
-            );
+            setError("Admin email and password are required.");
             return;
         }
 
@@ -27,12 +29,11 @@ function AdminLogin() {
             setLoading(true);
 
             const response = await fetch(
-                "http://localhost:3000/api/admin/login",
+                `${API_BASE_URL}/api/admin/login`,
                 {
                     method: "POST",
                     headers: {
-                        "Content-Type":
-                            "application/json"
+                        "Content-Type": "application/json"
                     },
                     body: JSON.stringify({
                         email: cleanEmail,
@@ -45,8 +46,7 @@ function AdminLogin() {
 
             if (!response.ok || !data.success) {
                 throw new Error(
-                    data.message ||
-                    "Admin login failed."
+                    data.message || "Admin login failed."
                 );
             }
 
@@ -61,11 +61,12 @@ function AdminLogin() {
             );
 
             navigate("/admin-dashboard");
-
         } catch (error) {
+            console.error("Admin login error:", error);
+
             setError(
                 error.message ||
-                "Unable to login as admin."
+                "Unable to connect to the MINEPTHE server."
             );
         } finally {
             setLoading(false);
@@ -94,27 +95,19 @@ function AdminLogin() {
                         "0 10px 30px rgba(0,0,0,0.08)"
                 }}
             >
-                <h1>
-                    MINEPTHE Admin
-                </h1>
+                <h1>MINEPTHE Admin</h1>
 
-                <p>
-                    Secure administrator login
-                </p>
+                <p>Secure administrator login</p>
 
                 <form onSubmit={handleLogin}>
                     <div style={{ marginBottom: "16px" }}>
-                        <label>
-                            Admin Email
-                        </label>
+                        <label>Admin Email</label>
 
                         <input
                             type="email"
                             value={email}
                             onChange={(event) =>
-                                setEmail(
-                                    event.target.value
-                                )
+                                setEmail(event.target.value)
                             }
                             placeholder="Admin email"
                             autoComplete="username"
@@ -128,17 +121,13 @@ function AdminLogin() {
                     </div>
 
                     <div style={{ marginBottom: "16px" }}>
-                        <label>
-                            Admin Password
-                        </label>
+                        <label>Admin Password</label>
 
                         <input
                             type="password"
                             value={password}
                             onChange={(event) =>
-                                setPassword(
-                                    event.target.value
-                                )
+                                setPassword(event.target.value)
                             }
                             placeholder="Admin password"
                             autoComplete="current-password"
