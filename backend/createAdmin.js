@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 const bcrypt = require("bcryptjs");
-const mysql = require("mysql2/promise");
+const { pool } = require("./db");
 const readline = require("readline");
 
 const rl = readline.createInterface({
@@ -67,28 +67,7 @@ async function createAdmin() {
             );
         }
 
-        db = await mysql.createConnection({
-            host:
-                process.env.DB_HOST ||
-                "localhost",
-
-            user:
-                process.env.DB_USER ||
-                "root",
-
-            password:
-                process.env.DB_PASSWORD ||
-                "",
-
-            database:
-                process.env.DB_NAME ||
-                "minepthe",
-
-            port:
-                Number(
-                    process.env.DB_PORT || 3306
-                )
-        });
+        db = pool;
 
         /*
          * Make sure there is only ONE admin.

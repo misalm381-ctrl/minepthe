@@ -1,5 +1,4 @@
-﻿require("dotenv").config();
-const dns = require("dns");
+require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
@@ -67,57 +66,18 @@ app.use(
 let db = null;
 
 async function connectDatabase() {
-    console.log("==========================================");
-console.log("AIVEN DNS DIAGNOSTIC");
-console.log("Host:", process.env.DB_HOST);
-
-dns.lookup(process.env.DB_HOST, (error, address, family) => {
-    if (error) {
-        console.error("DNS LOOKUP FAILED");
-        console.error("Code:", error.code);
-        console.error("Message:", error.message);
-    } else {
-        console.log("DNS LOOKUP SUCCESS");
-        console.log("Address:", address);
-        console.log("Family:", family);
-    }
-
-    console.log("==========================================");
-});
     try {
-        await testConnection();
+        const isConnected = await testConnection();
 
-        db = sharedDbPool;
-
-        console.log("MINEPTHE database pool initialized successfully.");
-
+        if (isConnected) {
+            db = sharedDbPool;
+            console.log("MINEPTHE database pool initialized successfully.");
+        } else {
+            db = null;
+            console.error("MINEPTHE database connection could not be established.");
+        }
     } catch (error) {
-        console.error("");
-        console.error("==========================================");
-        console.error("MINEPTHE DATABASE CONNECTION FAILED");
-        console.error("==========================================");
-        console.error("Code:", error?.code || "N/A");
-        console.error("Message:", error?.message || "N/A");
-        console.error("Errno:", error?.errno || "N/A");
-        console.error("SQL State:", error?.sqlState || error?.sqlstate || "N/A");
-        console.error("Syscall:", error?.syscall || "N/A");
-        console.error("Host configured:", process.env.DB_HOST || "NOT SET");
-        console.error("Port configured:", process.env.DB_PORT || "NOT SET");
-        console.error("User configured:", process.env.DB_USER || "NOT SET");
-        console.error("Database configured:", process.env.DB_NAME || "NOT SET");
-        console.error(
-            "SSL configured:",
-            String(process.env.DB_SSL || "").toLowerCase() === "true"
-                ? "YES"
-                : "NO"
-        );
-        console.error(
-            "Password configured:",
-            process.env.DB_PASSWORD ? "YES" : "NO"
-        );
-        console.error("==========================================");
-        console.error("");
-
+        console.error("MINEPTHE database connection exception:", error?.message || error);
         db = null;
     }
 }
