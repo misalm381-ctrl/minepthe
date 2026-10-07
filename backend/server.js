@@ -1,4 +1,5 @@
 ﻿require("dotenv").config();
+const dns = require("dns");
 
 const express = require("express");
 const cors = require("cors");
@@ -66,6 +67,23 @@ app.use(
 let db = null;
 
 async function connectDatabase() {
+    console.log("==========================================");
+console.log("AIVEN DNS DIAGNOSTIC");
+console.log("Host:", process.env.DB_HOST);
+
+dns.lookup(process.env.DB_HOST, (error, address, family) => {
+    if (error) {
+        console.error("DNS LOOKUP FAILED");
+        console.error("Code:", error.code);
+        console.error("Message:", error.message);
+    } else {
+        console.log("DNS LOOKUP SUCCESS");
+        console.log("Address:", address);
+        console.log("Family:", family);
+    }
+
+    console.log("==========================================");
+});
     try {
         await testConnection();
 
