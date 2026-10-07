@@ -1,33 +1,25 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 const API_BASE_URL =
     import.meta.env.VITE_API_URL ||
     "http://localhost:3000";
 
-function AdminLogin() {
+export default function AdminLogin() {
     const navigate = useNavigate();
 
-    const [email, setEmail] = useState("");
+    const [email, setEmail] = useState("admin@minepthe.com");
     const [password, setPassword] = useState("");
     const [loading, setLoading] = useState(false);
-    const [error, setError] = useState("");
+    const [message, setMessage] = useState("");
 
-    const handleLogin = async (event) => {
+    async function handleLogin(event) {
         event.preventDefault();
 
-        setError("");
-
-        const cleanEmail = email.trim().toLowerCase();
-
-        if (!cleanEmail || !password) {
-            setError("Admin email and password are required.");
-            return;
-        }
+        setMessage("");
+        setLoading(true);
 
         try {
-            setLoading(true);
-
             const response = await fetch(
                 `${API_BASE_URL}/api/admin/login`,
                 {
@@ -36,42 +28,58 @@ function AdminLogin() {
                         "Content-Type": "application/json"
                     },
                     body: JSON.stringify({
-                        email: cleanEmail,
+                        email: email.trim(),
                         password
                     })
                 }
             );
 
-            const data = await response.json();
+            const text = await response.text();
 
-            if (!response.ok || !data.success) {
-                throw new Error(
-                    data.message || "Admin login failed."
+            let data;
+
+            try {
+                data = JSON.parse(text);
+            } catch {
+                data = {
+                    message: text || "Server returned an invalid response."
+                };
+            }
+
+            if (!response.ok) {
+                setMessage(
+                    data.message ||
+                    `Admin login failed. Server returned HTTP ${response.status}.`
+                );
+                return;
+            }
+
+            if (!data.token) {
+                setMessage(
+                    data.message ||
+                    "Login succeeded, but the server did not return an admin token."
+                );
+                return;
+            }
+
+            localStorage.setItem("adminToken", data.token);
+
+            if (data.admin) {
+                localStorage.setItem(
+                    "adminUser",
+                    JSON.stringify(data.admin)
                 );
             }
 
-            localStorage.setItem(
-                "mineptheAdminToken",
-                data.token
-            );
-
-            localStorage.setItem(
-                "mineptheAdmin",
-                JSON.stringify(data.admin)
-            );
-
             navigate("/admin-dashboard");
         } catch (error) {
-            console.error("Admin login error:", error);
-
-            setError(
-                error.message ||
-                "Unable to connect to the MINEPTHE server."
+            setMessage(
+                `Cannot connect to backend: ${error.message}`
             );
         } finally {
             setLoading(false);
         }
-    };
+    }
 
     return (
         <div
@@ -88,69 +96,71 @@ function AdminLogin() {
                     width: "100%",
                     maxWidth: "440px",
                     padding: "32px",
-                    borderRadius: "16px",
-                    border: "1px solid #ddd",
-                    background: "#fff",
-                    boxShadow:
-                        "0 10px 30px rgba(0,0,0,0.08)"
+                    borderRadius: "18px",
+                    boxShadow: "0 10px 35px rgba(0,0,0,0.12)",
+                    background: "white"
                 }}
             >
-                <h1>MINEPTHE Admin</h1>
+                <h1 style={{ marginBottom: "8px" }}>
+                    MINEPTHE Admin
+                </h1>
 
-                <p>Secure administrator login</p>
+                <p style={{ marginBottom: "28px" }}>
+                    Secure administrator login
+                </p>
 
                 <form onSubmit={handleLogin}>
-                    <div style={{ marginBottom: "16px" }}>
-                        <label>Admin Email</label>
+                    <label>
+                        Admin Email
+                    </label>
 
-                        <input
-                            type="email"
-                            value={email}
-                            onChange={(event) =>
-                                setEmail(event.target.value)
-                            }
-                            placeholder="Admin email"
-                            autoComplete="username"
-                            style={{
-                                width: "100%",
-                                padding: "12px",
-                                marginTop: "6px",
-                                boxSizing: "border-box"
-                            }}
-                        />
-                    </div>
+                    <input
+                        type="email"
+                        value={email}
+                        onChange={(event) =>
+                            setEmail(event.target.value)
+                        }
+                        required
+                        style={{
+                            width: "100%",
+                            padding: "12px",
+                            marginTop: "6px",
+                            marginBottom: "18px",
+                            boxSizing: "border-box"
+                        }}
+                    />
 
-                    <div style={{ marginBottom: "16px" }}>
-                        <label>Admin Password</label>
+                    <label>
+                        Admin Password
+                    </label>
 
-                        <input
-                            type="password"
-                            value={password}
-                            onChange={(event) =>
-                                setPassword(event.target.value)
-                            }
-                            placeholder="Admin password"
-                            autoComplete="current-password"
-                            style={{
-                                width: "100%",
-                                padding: "12px",
-                                marginTop: "6px",
-                                boxSizing: "border-box"
-                            }}
-                        />
-                    </div>
+                    <input
+                        type="password"
+                        value={password}
+                        onChange={(event) =>
+                            setPassword(event.target.value)
+                        }
+                        required
+                        style={{
+                            width: "100%",
+                            padding: "12px",
+                            marginTop: "6px",
+                            marginBottom: "18px",
+                            boxSizing: "border-box"
+                        }}
+                    />
 
-                    {error && (
+                    {message && (
                         <div
                             style={{
-                                marginBottom: "16px",
+                                marginBottom: "18px",
                                 padding: "12px",
                                 borderRadius: "8px",
                                 background: "#ffe8e8",
-                                color: "#b00020"
+                                color: "#a00000"
                             }}
                         >
-                            {error}
+                            {message}
                         </div>
                     )}
 
@@ -171,20 +181,12 @@ function AdminLogin() {
                     </button>
                 </form>
 
-                <button
-                    type="button"
-                    onClick={() => navigate("/")}
-                    style={{
-                        width: "100%",
-                        marginTop: "12px",
-                        padding: "12px"
-                    }}
-                >
-                    Back to Home
-                </button>
+                <div style={{ marginTop: "20px" }}>
+                    <Link to="/">
+                        Back to Home
+                    </Link>
+                </div>
             </div>
         </div>
     );
 }
-
-export default AdminLogin;
