@@ -2,8 +2,12 @@
 
 const express = require("express");
 const cors = require("cors");
-const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
+
+const {
+    pool: sharedDbPool,
+    testConnection
+} = require("./db");
 const jwt = require("jsonwebtoken");
 
 const {
@@ -59,38 +63,46 @@ app.use(
    DATABASE
 ========================================================= */
 
-const dbConfig = {
-    host: process.env.DB_HOST || "localhost",
-    user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "",
-    database: process.env.DB_NAME || "minepthe",
-    port: Number(process.env.DB_PORT || 3306)
-};
-
 let db = null;
-
 
 async function connectDatabase() {
     try {
-        db = await mysql.createPool({
-            ...dbConfig,
-            waitForConnections: true,
-            connectionLimit: 10,
-            queueLimit: 0
-        });
+        await testConnection();
 
-        await db.execute("SELECT 1");
+        db = sharedDbPool;
 
-        console.log("MySQL connected successfully!");
+        console.log("MINEPTHE database pool initialized successfully.");
 
     } catch (error) {
-        console.error("MySQL connection failed:");
-        console.error(error.message);
+        console.error("");
+        console.error("==========================================");
+        console.error("MINEPTHE DATABASE CONNECTION FAILED");
+        console.error("==========================================");
+        console.error("Code:", error?.code || "N/A");
+        console.error("Message:", error?.message || "N/A");
+        console.error("Errno:", error?.errno || "N/A");
+        console.error("SQL State:", error?.sqlState || error?.sqlstate || "N/A");
+        console.error("Syscall:", error?.syscall || "N/A");
+        console.error("Host configured:", process.env.DB_HOST || "NOT SET");
+        console.error("Port configured:", process.env.DB_PORT || "NOT SET");
+        console.error("User configured:", process.env.DB_USER || "NOT SET");
+        console.error("Database configured:", process.env.DB_NAME || "NOT SET");
+        console.error(
+            "SSL configured:",
+            String(process.env.DB_SSL || "").toLowerCase() === "true"
+                ? "YES"
+                : "NO"
+        );
+        console.error(
+            "Password configured:",
+            process.env.DB_PASSWORD ? "YES" : "NO"
+        );
+        console.error("==========================================");
+        console.error("");
 
         db = null;
     }
 }
-
 
 function requireDatabase(res) {
     if (!db) {
