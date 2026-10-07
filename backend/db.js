@@ -2,7 +2,8 @@
 
 const mysql = require("mysql2/promise");
 
-const useSSL = String(process.env.DB_SSL || "").toLowerCase() === "true";
+const useSSL =
+    String(process.env.DB_SSL || "").toLowerCase() === "true";
 
 const pool = mysql.createPool({
     host: process.env.DB_HOST || "localhost",
@@ -30,10 +31,37 @@ async function testConnection() {
 
     try {
         connection = await pool.getConnection();
+
+        await connection.query("SELECT 1");
+
+        console.log("==========================================");
         console.log("MySQL connected successfully!");
+        console.log("Database:", process.env.DB_NAME || "minepthe");
+        console.log("Host:", process.env.DB_HOST || "localhost");
+        console.log("Port:", process.env.DB_PORT || 3306);
+        console.log("SSL:", useSSL);
+        console.log("==========================================");
+
         return true;
     } catch (error) {
-        console.error("MySQL connection failed:", error.message);
+        console.error("==========================================");
+        console.error("MYSQL CONNECTION FAILED");
+        console.error("Code:", error.code || "unknown");
+        console.error("Message:", error.message || "unknown");
+        console.error("Errno:", error.errno || "unknown");
+        console.error("SQL State:", error.sqlState || "unknown");
+        console.error("Syscall:", error.syscall || "unknown");
+        console.error("Host configured:", process.env.DB_HOST || "MISSING");
+        console.error("Port configured:", process.env.DB_PORT || "MISSING");
+        console.error("User configured:", process.env.DB_USER || "MISSING");
+        console.error("Database configured:", process.env.DB_NAME || "MISSING");
+        console.error("SSL configured:", useSSL);
+        console.error(
+            "Password configured:",
+            process.env.DB_PASSWORD ? "YES" : "NO"
+        );
+        console.error("==========================================");
+
         return false;
     } finally {
         if (connection) {
